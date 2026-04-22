@@ -1,121 +1,175 @@
 #!/bin/bash
-set -e
-
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  NFDC Planning MCP Server – one-time installer for macOS
-# ─────────────────────────────────────────────────────────────
+#  Works on a completely fresh Mac with nothing pre-installed.
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
 
+REPO="MJPinfield/nfdc-mcp-server"
 INSTALL_DIR="$HOME/nfdc-mcp-server"
-CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+CLAUDE_CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
 UV_BIN="$HOME/.local/bin/uv"
 
-echo ""
-echo "╔══════════════════════════════════════════════════════╗"
-echo "║   New Forest Planning – Claude Tool Installer        ║"
-echo "╚══════════════════════════════════════════════════════╝"
-echo ""
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-# ── 1. Install uv if missing ──────────────────────────────────
-if ! command -v uv &>/dev/null && [ ! -f "$UV_BIN" ]; then
-  echo "▶ Installing uv (Python package manager)..."
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.local/bin:$PATH"
-  echo "  ✓ uv installed"
+print_banner() {
+  echo ""
+  echo "╔══════════════════════════════════════════════════════╗"
+  echo "║   New Forest Planning – Claude Tool Installer        ║"
+  echo "╚══════════════════════════════════════════════════════╝"
+  echo ""
+}
+
+step() { echo ""; echo "▶ $1"; }
+ok()   { echo "  ✓ $1"; }
+info() { echo "  · $1"; }
+
+die() {
+  echo ""
+  echo "  ✗ ERROR: $1"
+  echo ""
+  echo "  Something went wrong during installation."
+  echo "  Please send this message to Max and he can help."
+  echo ""
+  exit 1
+}
+
+# ── 1. Xcode Command Line Tools (provides curl, git, etc.) ───────────────────
+step "Checking system tools..."
+
+if ! xcode-select -p &>/dev/null; then
+  info "Installing Xcode Command Line Tools (this may take several minutes)..."
+  info "A popup window may appear – click 'Install' if it does."
+  xcode-select --install 2>/dev/null || true
+
+  # Wait for installation to complete
+  until xcode-select -p &>/dev/null; do
+    sleep 5
+  done
+  ok "Xcode Command Line Tools installed"
 else
-  export PATH="$HOME/.local/bin:$PATH"
-  echo "  ✓ uv already installed"
+  ok "Xcode Command Line Tools already present"
 fi
 
-# ── 2. Download the server files ─────────────────────────────
-echo ""
-echo "▶ Downloading the planning server..."
+# ── 2. uv (Python + package manager in one) ──────────────────────────────────
+step "Checking uv (Python manager)..."
 
-mkdir -p "$INSTALL_DIR"
+export PATH="$HOME/.local/bin:$PATH"
 
-curl -LsSf \
-  "https://raw.githubusercontent.com/MJPinfield/nfdc-mcp-server/main/main.py" \
-  -o "$INSTALL_DIR/main.py"
+if ! command -v uv &>/dev/null; then
+  info "Installing uv..."
+  curl -LsSf https://astral.sh/uv/install.sh | sh \
+    || die "Could not install uv. Please check your internet connection."
+  export PATH="$HOME/.local/bin:$PATH"
+  ok "uv installed"
+else
+  ok "uv already installed"
+fi
 
-curl -LsSf \
-  "https://raw.githubusercontent.com/MJPinfield/nfdc-mcp-server/main/pyproject.toml" \
-  -o "$INSTALL_DIR/pyproject.toml"
+# Sanity check
+uv --version &>/dev/null || die "uv installed but not working correctly."
 
-echo "  ✓ Server downloaded to $INSTALL_DIR"
+# ── 3. Download the server files ─────────────────────────────────────────────
+step "Downloading the planning server..."
 
-# ── 3. Install Python dependencies ───────────────────────────
-echo ""
-echo "▶ Installing dependencies (this may take a minute)..."
-cd "$INSTALL_DIR"
-"$UV_BIN" sync --quiet
-echo "  ✓ Dependencies installed"
+# Base URL for raw file downloads
+RAW="https://raw.githubusercontent.com/$REPO/main"
 
-# ── 4. Configure Claude Desktop ──────────────────────────────
-echo ""
-echo "▶ Configuring Claude Desktop..."
-
-CLAUDE_DIR="$HOME/Library/Application Support/Claude"
-mkdir -p "$CLAUDE_DIR"
-
-# Build the new server entry
-NEW_ENTRY=$(cat <<EOF
-{
-  "command": "$UV_BIN",
-  "args": [
-    "run",
-    "--project",
-    "$INSTALL_DIR",
-    "python",
-    "$INSTALL_DIR/main.py"
-  ],
-  "env": {}
-}
-EOF
+# Files to download: destination_path relative to INSTALL_DIR : source path in repo
+FILES=(
+  "main.py"
+  "pyproject.toml"
+  "nfdc/__init__.py"
+  "nfdc/constants.py"
+  "nfdc/http.py"
+  "nfdc/parsers.py"
+  "nfdc/tools/__init__.py"
+  "nfdc/tools/search.py"
+  "nfdc/tools/details.py"
+  "nfdc/tools/comments.py"
+  "nfdc/tools/documents.py"
 )
 
-if [ -f "$CONFIG" ]; then
-  # Config exists – check if our server is already there
-  if grep -q "NFDC Planning" "$CONFIG"; then
-    echo "  ✓ Claude Desktop already configured (skipping)"
-  else
-    # Use Python (available via uv) to safely merge the JSON
-    "$UV_BIN" run --with pip python - <<PYEOF
-import json, sys
+for file in "${FILES[@]}"; do
+  dest="$INSTALL_DIR/$file"
+  mkdir -p "$(dirname "$dest")"
+  curl -LsSf "$RAW/$file" -o "$dest" \
+    || die "Could not download $file. Please check your internet connection."
+done
 
-config_path = """$CONFIG"""
-new_entry = json.loads("""$NEW_ENTRY""")
+ok "Server downloaded to $INSTALL_DIR"
 
-with open(config_path) as f:
-    config = json.load(f)
+# ── 4. Install Python dependencies ───────────────────────────────────────────
+step "Installing Python dependencies (this may take a minute)..."
 
-config.setdefault("mcpServers", {})["NFDC Planning"] = new_entry
+"$UV_BIN" sync --project "$INSTALL_DIR" --quiet \
+  || die "Could not install Python dependencies."
 
-with open(config_path, "w") as f:
-    json.dump(config, f, indent=2)
+ok "Dependencies installed"
 
-print("  ✓ Added NFDC Planning to Claude Desktop config")
-PYEOF
-  fi
-else
-  # No config yet – create a fresh one
-  cat > "$CONFIG" <<EOF
-{
-  "mcpServers": {
-    "NFDC Planning": $NEW_ENTRY
-  }
-}
-EOF
-  echo "  ✓ Created Claude Desktop config"
+# ── 5. Check Claude Desktop is installed ─────────────────────────────────────
+step "Checking Claude Desktop..."
+
+CLAUDE_APP="/Applications/Claude.app"
+if [ ! -d "$CLAUDE_APP" ]; then
+  echo ""
+  echo "  ✗ Claude Desktop does not appear to be installed."
+  echo ""
+  echo "  Please download and install it from:"
+  echo "    https://claude.ai/download"
+  echo ""
+  echo "  Once installed, run this script again."
+  exit 1
 fi
 
-# ── 5. Done ───────────────────────────────────────────────────
+ok "Claude Desktop found"
+
+# ── 6. Configure Claude Desktop ──────────────────────────────────────────────
+step "Configuring Claude Desktop..."
+
+mkdir -p "$HOME/Library/Application Support/Claude"
+
+# Write a small Python script to merge the config safely
+"$UV_BIN" run --project "$INSTALL_DIR" python - <<PYEOF
+import json, pathlib, sys
+
+config_path = pathlib.Path("""$CLAUDE_CONFIG""")
+install_dir = """$INSTALL_DIR"""
+uv_bin      = """$UV_BIN"""
+
+new_entry = {
+    "command": uv_bin,
+    "args": [
+        "run",
+        "--project", install_dir,
+        "python", f"{install_dir}/main.py"
+    ],
+    "env": {}
+}
+
+if config_path.exists():
+    try:
+        config = json.loads(config_path.read_text())
+    except json.JSONDecodeError:
+        config = {}
+else:
+    config = {}
+
+config.setdefault("mcpServers", {})["NFDC Planning"] = new_entry
+config_path.write_text(json.dumps(config, indent=2))
+print("  ✓ Claude Desktop configured")
+PYEOF
+
+# ── 7. Done ───────────────────────────────────────────────────────────────────
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║  Installation complete!                              ║"
+echo "║  All done!                                           ║"
 echo "║                                                      ║"
 echo "║  Next step:                                          ║"
-echo "║    Quit Claude Desktop and open it again.            ║"
+echo "║    Quit Claude Desktop completely and reopen it.     ║"
+echo "║    (Right-click the Dock icon → Quit)                ║"
 echo "║                                                      ║"
-echo "║  Then ask Claude something like:                     ║"
+echo "║  Then try asking Claude:                             ║"
 echo "║    \"Look up planning application 25/10114\"           ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
