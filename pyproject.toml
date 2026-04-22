@@ -1,0 +1,15 @@
+[project]
+name = "nfdc-mcp-server"
+version = "0.1.0"
+description = "MCP server for searching New Forest District Council planning applications"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "fastmcp>=3.2.4",
+    "httpx>=0.28.1",
+    "lxml>=6.1.0",
+]
+
+[project.scripts]
+nfdc-mcp-server = "main:mcp.run"
